@@ -409,7 +409,7 @@ void *HAMT_set(HAMT *hamt, const char *str,
 }
 
 HAMTEntry *
-HAMT_search_entry(HAMT *hamt, const char *str)
+HAMT_search(HAMT *hamt, const char *str)
 {
     HAMTNode *node;
     uint32_t key, keypart, Map;
@@ -455,8 +455,8 @@ HAMT_search_entry(HAMT *hamt, const char *str)
 }
 
 void *
-HAMT_search(HAMT *hamt, const char *str) {
-    HAMTEntry *entry = HAMT_search_entry(hamt, str);
+HAMT_get(HAMT *hamt, const char *str) {
+    HAMTEntry *entry = HAMT_search(hamt, str);
     if (!entry) {
         return NULL;
     }

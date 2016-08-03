@@ -79,14 +79,21 @@ void HAMT_destroy( HAMT *hamt,
 void *HAMT_set(HAMT *hamt, const char *key,
                void *data, void (*deletefunc) (void *data));
 
-HAMTEntry *HAMT_search_entry(HAMT *hamt, const char *str);
+/** Search for the HAMTEntry associated with a key in the HAMT.
+ * \param hamt          Hash array mapped trie
+ * \param str           Key
+ * \return NULL if key/data not present in HAMT, otherwise associated HAMTEntry.
+ */
+
+HAMTEntry *HAMT_search(HAMT *hamt, const char *str);
 
 /** Search for the data associated with a key in the HAMT.
  * \param hamt          Hash array mapped trie
  * \param str           Key
  * \return NULL if key/data not present in HAMT, otherwise associated data.
  */
-void *HAMT_search(HAMT *hamt, const char *str);
+
+void *HAMT_get(HAMT *hamt, const char *str);
 
 /** Traverse over all keys in HAMT, calling function on each data item. 
  * \param hamt          Hash array mapped trie

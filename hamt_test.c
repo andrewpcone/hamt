@@ -17,23 +17,18 @@ int main() {
     ssize_t line_len_or_err;
     while ((line_len_or_err = getline(&line, &line_cap, stdin)) >= 0) {
         line_len = line_len_or_err;
-        //        printf("line: %s\n", line);
         if (line[line_len - 1] == '\n') {
             line[line_len - 1] = '\0';
         }
-        //        printf("line: %s\n", line);
 
         char *op = strsep(&line, "\t");
-        //        printf("op: %s\n", op);
         char *key = strsep(&line, "\t");
-        //        printf("key: %s\n", key);
         
         if (!strcmp(op, "S")) {
             key = strdup(key);
             char *val = strdup(strsep(&line, "\t"));
-            //            printf("val: %s\n", val);
 
-            HAMTEntry *e = HAMT_search_entry(h, key);
+            HAMTEntry *e = HAMT_search(h, key);
             if (e) {
                 free(key);
                 HAMTEntry_set_data(e, val, free);
@@ -41,7 +36,8 @@ int main() {
                 HAMT_set(h, key, val, nothing);
             }
         } else if (!strcmp(op, "D")) {
-                ;
+            // xxx todo, when HAMT_remove is a thing
+            ;
         }
         
     }
