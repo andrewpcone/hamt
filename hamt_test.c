@@ -8,8 +8,6 @@ void hamt_error_func(const char *file, unsigned int line, const char *message)
     fprintf(stderr, "%s:%u: %s", file, line, message);
 }
 
-void nothing(void *x) {}
-
 int main() {
     HAMT *h = HAMT_create(1, hamt_error_func);
     char *line = NULL;

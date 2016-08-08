@@ -53,7 +53,6 @@
     } while (0)
 
 struct HAMTEntry {
-    STAILQ_ENTRY(HAMTEntry) next;       /* next hash table entry */
      const char *str;    /* string being hashed */
      void *data;             /* data pointer being stored */
 };
@@ -64,9 +63,11 @@ typedef struct HAMTNode {
 } HAMTNode;
 
 struct HAMT {
-    STAILQ_HEAD(HAMTEntryHead, HAMTEntry) entries;
+    HAMTEntry *entries;
+    size_t entries_size;
+    size_t length;
     HAMTNode *root;
-     void (*error_func) (const char *file, unsigned int line,
+    void (*error_func) (const char *file, unsigned int line,
                                     const char *message);
     uint32_t (*HashKey) (const char *key);
     uint32_t (*ReHashKey) (const char *key, int Level);
@@ -84,13 +85,19 @@ struct HAMT {
                           "Subtrie is seen as subtrie before flag is set (misaligned?)"); \
         (n)->BaseValue = (uintptr_t)(v) | 1;    \
     } while (0)
-#define SetValue(h, n, v)       do {                            \
-        if ((uintptr_t)(v) & 1)                                 \
+#define GetSubTrie(n)           (HAMTNode *)(((n)->BaseValue | 1) ^ 1)
+
+
+#define SetEntryForNode(h, n, e)       do {                     \
+        if ((uintptr_t)(e) & 1)                                 \
             h->error_func(__FILE__, __LINE__,                   \
                           "Value is seen as subtrie (misaligned?)"); \
-        (n)->BaseValue = (uintptr_t)(v);        \
+        (n)->BaseValue = ((uintptr_t)((e) - h->entries) + 1) << 1 ;      \
     } while (0)
-#define GetSubTrie(n)           (HAMTNode *)(((n)->BaseValue | 1) ^ 1)
+#define GetEntryForNode(h, n)    ((HAMTEntry *)&h->entries[((n)->BaseValue >> 1) - 1])
+
+void HAMT_nothing(void *x)
+{}
 
 static uint32_t
 HashKey(const char *key)
@@ -132,10 +139,12 @@ HAMT *
 HAMT_create(int nocase,  void (*error_func)
     (const char *file, unsigned int line, const char *message))
 {
-     HAMT *hamt = malloc(sizeof(HAMT));
+    HAMT *hamt = malloc(sizeof(HAMT));
     int i;
 
-    STAILQ_INIT(&hamt->entries);
+    hamt->length = 0;
+    hamt->entries_size = 4;
+    hamt->entries = malloc(hamt->entries_size * sizeof(HAMTEntry));
     hamt->root = malloc(32*sizeof(HAMTNode));
 
     for (i=0; i<32; i++) {
@@ -176,18 +185,15 @@ HAMT_delete_trie(HAMTNode *node)
 }
 
 void
-HAMT_destroy(HAMT *hamt, void (*deletefunc) ( void *data))
+HAMT_destroy(HAMT *hamt, void (*deletefunc) (void *data))
 {
     int i;
 
     /* delete entries */
-    while (!STAILQ_EMPTY(&hamt->entries)) {
-        HAMTEntry *entry;
-        entry = STAILQ_FIRST(&hamt->entries);
-        STAILQ_REMOVE_HEAD(&hamt->entries, next);
-        deletefunc(entry->data);
-        free(entry);
+    for (size_t i = 0; i < hamt->length; i++) {
+        deletefunc(&hamt->entries[i].data);
     }
+    free(hamt->entries);
 
     /* delete trie */
     for (i=0; i<32; i++)
@@ -202,25 +208,24 @@ HAMT_traverse(HAMT *hamt, void *d,
               int (*func) (  void *node,
                              void *d))
 {
-    HAMTEntry *entry;
-    STAILQ_FOREACH(entry, &hamt->entries, next) {
-        int retval = func(entry->data, d);
+    for (size_t i = 0; i < hamt->length; i++) {
+        int retval = func(hamt->entries[i].data, d);
         if (retval != 0)
             return retval;
     }
     return 0;
 }
 
-const HAMTEntry *
-HAMT_first(const HAMT *hamt)
+HAMTEntry *
+HAMT_first(HAMT *hamt)
 {
-    return STAILQ_FIRST(&hamt->entries);
+    return hamt->entries;
 }
 
-const HAMTEntry *
-HAMT_next(const HAMTEntry *prev)
+HAMTEntry *
+HAMT_next(HAMTEntry *prev)
 {
-    return STAILQ_NEXT(prev, next);
+    return prev + 1;
 }
 
 
@@ -243,6 +248,19 @@ HAMTEntry_set_data(HAMTEntry *entry, void *new_data, void (*deletefunc)(void *))
     entry->data = new_data;
 }
 
+HAMTEntry*
+HAMT_add_entry(HAMT *hamt, const char *str, void *data)
+{
+        if (hamt->length == hamt->entries_size) {
+            hamt->entries_size *= 2;
+            hamt->entries = realloc(hamt->entries, hamt->entries_size * sizeof(HAMTEntry));
+        }
+        hamt->length++;
+        HAMTEntry *e = &hamt->entries[hamt->length - 1];
+        e->str = str;
+        e->data = data;
+        return e;
+}
 
 void *
 HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
@@ -260,11 +278,10 @@ HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
 
     if (!node->BaseValue) {
         node->BitMapKey = key;
-        entry = malloc(sizeof(HAMTEntry));
-        entry->str = str;
-        entry->data = data;
-        STAILQ_INSERT_TAIL(&hamt->entries, entry, next);
-        SetValue(hamt, node, entry);
+
+        entry = HAMT_add_entry(hamt, str, data);
+
+        SetEntryForNode(hamt, node, entry);
         if (IsSubTrie(node))
             hamt->error_func(__FILE__, __LINE__,
                              "Data is seen as subtrie (misaligned?)");
@@ -275,17 +292,17 @@ HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
     for (;;) {
         if (!(IsSubTrie(node))) {
             if (node->BitMapKey == key
-                && hamt->CmpKey(((HAMTEntry *)(node->BaseValue))->str,
+                && hamt->CmpKey(GetEntryForNode(hamt, node)->str,
                                 str) == 0) {
-                
+
                 if (*replace) {
-                    deletefunc(((HAMTEntry *)(node->BaseValue))->data);
-                    ((HAMTEntry *)(node->BaseValue))->str = str;
-                    ((HAMTEntry *)(node->BaseValue))->data = data;
+                    deletefunc(GetEntryForNode(hamt, node)->data);
+                    GetEntryForNode(hamt, node)->str = str;
+                    GetEntryForNode(hamt, node)->data = data;
                 } else
                     deletefunc(data);
-                
-                return ((HAMTEntry *)(node->BaseValue))->data;
+
+                return GetEntryForNode(hamt, node)->data;
             } else {
                 uint32_t key2 = node->BitMapKey;
                 /* build tree downward until keys differ */
@@ -298,7 +315,7 @@ HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
                         /* Exceeded 32 bits: rehash */
                         key = hamt->ReHashKey(str, level);
                         key2 = hamt->ReHashKey(
-                            ((HAMTEntry *)(node->BaseValue))->str, level);
+                            GetEntryForNode(hamt, node)->str, level);
                         keypartbits = 0;
                     }
                     keypart = (key >> keypartbits) & 0x1F;
@@ -319,20 +336,17 @@ HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
                         /* partitioned: allocate two-node subtrie */
                         newnodes = malloc(2*sizeof(HAMTNode));
 
-                        entry = malloc(sizeof(HAMTEntry));
-                        entry->str = str;
-                        entry->data = data;
-                        STAILQ_INSERT_TAIL(&hamt->entries, entry, next);
+                        entry = HAMT_add_entry(hamt, str, data);
 
                         /* Copy nodes into subtrie based on order */
                         if (keypart2 < keypart) {
                             newnodes[0].BitMapKey = key2;
                             newnodes[0].BaseValue = node->BaseValue;
                             newnodes[1].BitMapKey = key;
-                            SetValue(hamt, &newnodes[1], entry);
+                            SetEntryForNode(hamt, &newnodes[1], entry);
                         } else {
                             newnodes[0].BitMapKey = key;
-                            SetValue(hamt, &newnodes[0], entry);
+                            SetEntryForNode(hamt, &newnodes[0], entry);
                             newnodes[1].BitMapKey = key2;
                             newnodes[1].BaseValue = node->BaseValue;
                         }
@@ -380,11 +394,9 @@ HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
             free(GetSubTrie(node));
             /* Set up new node */
             newnodes[Map].BitMapKey = key;
-            entry = malloc(sizeof(HAMTEntry));
-            entry->str = str;
-            entry->data = data;
-            STAILQ_INSERT_TAIL(&hamt->entries, entry, next);
-            SetValue(hamt, &newnodes[Map], entry);
+
+            entry = HAMT_add_entry(hamt, str, data);
+            SetEntryForNode(hamt, &newnodes[Map], entry);
             SetSubTrie(hamt, node, newnodes);
 
             *replace = 1;
@@ -408,14 +420,13 @@ void *HAMT_set(HAMT *hamt, const char *str,
     return HAMT_insert(hamt, (const char *)str, data, &replace, deletefunc);
 }
 
-HAMTEntry *
-HAMT_search(HAMT *hamt, const char *str)
+HAMTEntry* HAMT_search(HAMT *hamt, const char *str)
 {
     HAMTNode *node;
     uint32_t key, keypart, Map;
     int keypartbits = 0;
     int level = 0;
-    
+
     key = hamt->HashKey(str);
     keypart = key & 0x1F;
     node = &hamt->root[keypart];
@@ -426,9 +437,9 @@ HAMT_search(HAMT *hamt, const char *str)
     for (;;) {
         if (!(IsSubTrie(node))) {
             if (node->BitMapKey == key
-                && hamt->CmpKey(((HAMTEntry *)(node->BaseValue))->str,
+                && hamt->CmpKey(GetEntryForNode(hamt, node)->str,
                                 str) == 0)
-                return ((HAMTEntry *)(node->BaseValue));
+                return GetEntryForNode(hamt, node);
             else
                 return NULL;
         }
@@ -455,10 +466,18 @@ HAMT_search(HAMT *hamt, const char *str)
 }
 
 void *
-HAMT_get(HAMT *hamt, const char *str) {
+HAMT_get(HAMT *hamt, const char *str)
+{
     HAMTEntry *entry = HAMT_search(hamt, str);
     if (!entry) {
         return NULL;
     }
     return entry->data;
+}
+
+
+size_t
+HAMT_length(const HAMT *hamt)
+{
+    return hamt->length;
 }

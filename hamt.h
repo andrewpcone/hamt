@@ -31,10 +31,32 @@
 #ifndef __HAMT_H__
 #define __HAMT_H__
 
+#include <stdlib.h>
+
 /** Hash array mapped trie data structure (opaque type). */
 typedef struct HAMT HAMT;
 /** Hash array mapped trie entry (opaque type). */
 typedef struct HAMTEntry HAMTEntry;
+
+#define PP_CAT(a, b) PP_CAT_I(a, b)
+#define PP_CAT_I(a, b) PP_CAT_II(~, a ## b)
+#define PP_CAT_II(p, res) res
+#define U(base) PP_CAT(base, __LINE__)
+
+typedef struct {HAMTEntry *e; int k;} iterstate_t;
+
+#define HAMT_foreach_value(valexpr, hamt)                               \
+    for (iterstate_t U(s) = {HAMT_first(hamt), 1}; U(s).k && U(s).e; U(s).e = HAMT_next(U(s).e), U(s).k = !U(s).k) \
+        for (valexpr = HAMTEntry_get_data(U(s).e); U(s).k; U(s).k = !U(s).k)
+
+#define HAMT_foreach(keyexpr, valexpr, hamt)                                         \
+    for (iterstate_t U(s) = {HAMT_first(hamt), 1}; U(s).k && U(s).e; U(s).e = HAMT_next(U(s).e), U(s).k = !U(s).k) \
+        for (keyexpr = HAMTEntry_get_str(U(s).e); U(s).k; )  \
+            for (valexpr = HAMTEntry_get_data(U(s).e); U(s).k; U(s).k = !U(s).k)
+
+#define HAMT_foreach_entry(e, hamt) \
+  for (HAMTEntry *e = HAMT_first(hamt); e; e = HAMT_next(e))
+
 
 /** Create new, empty, HAMT.  error_func() is called when an internal error is
  * encountered--it should NOT return to the calling function.
@@ -112,21 +134,27 @@ int HAMT_traverse(HAMT *hamt,  void *d,
  * \return First entry in HAMT, or NULL if HAMT is empty.
  */
 
-const HAMTEntry *HAMT_first(const HAMT *hamt);
+HAMTEntry *HAMT_first(HAMT *hamt);
 
 /** Get the next entry in a HAMT.
  * \param prev          Previous entry in HAMT
  * \return Next entry in HAMT, or NULL if no more entries.
  */
 
- const HAMTEntry *HAMT_next(const HAMTEntry *prev);
+HAMTEntry *HAMT_next(HAMTEntry *prev);
 
 /** Get the corresponding data for a HAMT entry.
  * \param entry         HAMT entry (as returned by HAMT_first() and HAMT_next())
  * \return Corresponding data item.
  */
 
-void *HAMTEntry_get_data(const HAMTEntry *entry);
+const char *HAMTEntry_get_str(const HAMTEntry *entry);
+void* HAMTEntry_get_data(const HAMTEntry *entry);
 void HAMTEntry_set_data(HAMTEntry *entry, void *new_data, void (*deletefunc)(void *));
+
+// convenience, for use as deletefunc arg
+void HAMT_nothing(void *x);
+
+size_t HAMT_length(const HAMT *hamt);
 
 #endif
