@@ -3,7 +3,7 @@
  *
  *  Copyright (C) 2016 Andrew Cone
  *
- *  Extractd from (https://github.com/yasm/yasm)
+ *  Based on (https://github.com/yasm/yasm)
  *
  *  Copyright (C) 2001-2007  Peter Johnson
  *
@@ -39,6 +39,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef HAMT_VERBOSE
+#include <stdio.h>
+#endif
+
 #include "hamt.h"
 
 #define BC_TWO(c)       ((uint32_t)0x1 << (c))
@@ -53,13 +57,14 @@
     } while (0)
 
 struct HAMTEntry {
-     const char *str;    /* string being hashed */
-     void *data;             /* data pointer being stored */
+    const void *key;
+    size_t keylen;
+    void *value;
 };
 
 typedef struct HAMTNode {
     uint32_t BitMapKey;            /* 32 bits, bitmap or hash key */
-    uintptr_t BaseValue;                /* Base of HAMTNode list or value */
+    uintptr_t BaseValue;           /* Base of HAMTNode list or value */
 } HAMTNode;
 
 struct HAMT {
@@ -67,11 +72,6 @@ struct HAMT {
     size_t entries_size;
     size_t length;
     HAMTNode *root;
-    void (*error_func) (const char *file, unsigned int line,
-                                    const char *message);
-    uint32_t (*HashKey) (const char *key);
-    uint32_t (*ReHashKey) (const char *key, int Level);
-    int (*CmpKey) (const char *s1, const char *s2);
 };
 
 /* XXX make a portable version of this.  This depends on the pointer being
@@ -81,18 +81,18 @@ struct HAMT {
 #define IsSubTrie(n)            ((n)->BaseValue & 1)
 #define SetSubTrie(h, n, v)     do {                            \
         if ((uintptr_t)(v) & 1)                                 \
-            h->error_func(__FILE__, __LINE__,                   \
-                          "Subtrie is seen as subtrie before flag is set (misaligned?)"); \
-        (n)->BaseValue = (uintptr_t)(v) | 1;    \
+            error_func(__FILE__, __LINE__,                              \
+                       "Subtrie is seen as subtrie before flag is set (misaligned?)"); \
+        (n)->BaseValue = (uintptr_t)(v) | 1;                            \
     } while (0)
 #define GetSubTrie(n)           (HAMTNode *)(((n)->BaseValue | 1) ^ 1)
 
 
 #define SetEntryForNode(h, n, e)       do {                     \
         if ((uintptr_t)(e) & 1)                                 \
-            h->error_func(__FILE__, __LINE__,                   \
-                          "Value is seen as subtrie (misaligned?)"); \
-        (n)->BaseValue = ((uintptr_t)((e) - h->entries) + 1) << 1 ;      \
+            error_func(__FILE__, __LINE__,                           \
+                       "Value is seen as subtrie (misaligned?)");       \
+        (n)->BaseValue = ((uintptr_t)((e) - h->entries) + 1) << 1 ;     \
     } while (0)
 #define GetEntryForNode(h, n)    ((HAMTEntry *)&h->entries[((n)->BaseValue >> 1) - 1])
 
@@ -100,44 +100,44 @@ void HAMT_nothing(void *x)
 {}
 
 static uint32_t
-HashKey(const char *key)
+rehash_key(const void *key, size_t keylen, int Level)
 {
+    const uint8_t *x = key;
     uint32_t a=31415, b=27183, vHash;
-    for (vHash=0; *key; key++, a*=b)
-        vHash = a*vHash + *key;
+    for (vHash=0; x - (uint8_t *)key < keylen; x++, a*=b)
+        vHash = a*vHash + *x;
     return vHash;
 }
 
 static uint32_t
-ReHashKey(const char *key, int Level)
+hash_key(const void *key, size_t keylen)
 {
-    uint32_t a=31415, b=27183, vHash;
-    for (vHash=0; *key; key++, a*=b)
-        vHash = a*vHash*(uint32_t)Level + *key;
-    return vHash;
+    return rehash_key(key, keylen, 0);
 }
 
-static uint32_t
-HashKey_nocase(const char *key)
+static int
+cmp_key(const void *x, size_t xlen, const void *y, size_t ylen)
 {
-    uint32_t a=31415, b=27183, vHash;
-    for (vHash=0; *key; key++, a*=b)
-        vHash = a*vHash + tolower(*key);
-    return vHash;
+    if (xlen != ylen) {
+        return xlen - ylen;
+    } else {
+        return memcmp(x, y, xlen);
+    }
+
 }
 
-static uint32_t
-ReHashKey_nocase(const char *key, int Level)
+static void
+error_func(const char *file, unsigned int line, const char *message)
 {
-    uint32_t a=31415, b=27183, vHash;
-    for (vHash=0; *key; key++, a*=b)
-        vHash = a*vHash*(uint32_t)Level + tolower(*key);
-    return vHash;
+#ifdef HAMT_VERBOSE
+    fprintf(stderr, "%s:%u: %s", file, line, message);
+#endif
+    exit(1);
 }
+
 
 HAMT *
-HAMT_create(int nocase,  void (*error_func)
-    (const char *file, unsigned int line, const char *message))
+HAMT_create()
 {
     HAMT *hamt = malloc(sizeof(HAMT));
     int i;
@@ -150,17 +150,6 @@ HAMT_create(int nocase,  void (*error_func)
     for (i=0; i<32; i++) {
         hamt->root[i].BitMapKey = 0;
         hamt->root[i].BaseValue = 0;
-    }
-
-    hamt->error_func = error_func;
-    if (nocase) {
-        hamt->HashKey = HashKey_nocase;
-        hamt->ReHashKey = ReHashKey_nocase;
-        hamt->CmpKey = strcasecmp;
-    } else {
-        hamt->HashKey = HashKey;
-        hamt->ReHashKey = ReHashKey;
-        hamt->CmpKey = strcmp;
     }
 
     return hamt;
@@ -185,13 +174,13 @@ HAMT_delete_trie(HAMTNode *node)
 }
 
 void
-HAMT_destroy(HAMT *hamt, void (*deletefunc) (void *data))
+HAMT_destroy(HAMT *hamt, void (*deletefunc) (void *))
 {
     int i;
 
     /* delete entries */
     for (size_t i = 0; i < hamt->length; i++) {
-        deletefunc(&hamt->entries[i].data);
+        deletefunc(&hamt->entries[i].value);
     }
     free(hamt->entries);
 
@@ -209,7 +198,7 @@ HAMT_traverse(HAMT *hamt, void *d,
                              void *d))
 {
     for (size_t i = 0; i < hamt->length; i++) {
-        int retval = func(hamt->entries[i].data, d);
+        int retval = func(hamt->entries[i].value, d);
         if (retval != 0)
             return retval;
     }
@@ -229,27 +218,33 @@ HAMT_next(HAMTEntry *prev)
 }
 
 
-const char *
-HAMTEntry_get_str(const HAMTEntry *entry)
+const void *
+HAMTEntry_get_key(const HAMTEntry *entry)
 {
-    return entry->str;
+    return entry->key;
+}
+
+size_t
+HAMTEntry_get_keylen(const HAMTEntry *entry)
+{
+    return entry->keylen;
 }
 
 void *
-HAMTEntry_get_data(const HAMTEntry *entry)
+HAMTEntry_get_value(const HAMTEntry *entry)
 {
-    return entry->data;
+    return entry->value;
 }
 
 void
-HAMTEntry_set_data(HAMTEntry *entry, void *new_data, void (*deletefunc)(void *))
+HAMTEntry_set_value(HAMTEntry *entry, void *new_value, void (*deletefunc)(void *))
 {
-    deletefunc(entry->data);
-    entry->data = new_data;
+    deletefunc(entry->value);
+    entry->value = new_value;
 }
 
 HAMTEntry*
-HAMT_add_entry(HAMT *hamt, const char *str, void *data)
+HAMT_add_entry(HAMT *hamt, const void *key, size_t keylen, void *value)
 {
         if (hamt->length == hamt->entries_size) {
             hamt->entries_size *= 2;
@@ -257,54 +252,58 @@ HAMT_add_entry(HAMT *hamt, const char *str, void *data)
         }
         hamt->length++;
         HAMTEntry *e = &hamt->entries[hamt->length - 1];
-        e->str = str;
-        e->data = data;
+        e->key = key;
+        e->keylen = keylen;
+        e->value = value;
         return e;
 }
 
 void *
-HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
-            void (*deletefunc) ( void *data))
+HAMT_insert(HAMT *hamt, const void * const key, size_t keylen, void *value, int *replace,
+            void (*deletefunc) ( void *value))
 {
     HAMTNode *node, *newnodes;
     HAMTEntry *entry;
-    uint32_t key, keypart, Map;
+    uint32_t key_hash, keypart, Map;
     int keypartbits = 0;
     int level = 0;
 
-    key = hamt->HashKey(str);
-    keypart = key & 0x1F;
+    key_hash = hash_key(key, keylen);
+    keypart = key_hash & 0x1F;
     node = &hamt->root[keypart];
 
     if (!node->BaseValue) {
-        node->BitMapKey = key;
+        node->BitMapKey = key_hash;
 
-        entry = HAMT_add_entry(hamt, str, data);
+        entry = HAMT_add_entry(hamt, key, keylen, value);
 
         SetEntryForNode(hamt, node, entry);
         if (IsSubTrie(node))
-            hamt->error_func(__FILE__, __LINE__,
-                             "Data is seen as subtrie (misaligned?)");
+            error_func(__FILE__, __LINE__,
+                       "Data is seen as subtrie (misaligned?)");
         *replace = 1;
-        return data;
+        return value;
     }
 
     for (;;) {
         if (!(IsSubTrie(node))) {
-            if (node->BitMapKey == key
-                && hamt->CmpKey(GetEntryForNode(hamt, node)->str,
-                                str) == 0) {
+            if (node->BitMapKey == key_hash
+                && cmp_key(GetEntryForNode(hamt, node)->key,
+                           GetEntryForNode(hamt, node)->keylen,
+                           key,
+                           keylen) == 0) {
 
                 if (*replace) {
-                    deletefunc(GetEntryForNode(hamt, node)->data);
-                    GetEntryForNode(hamt, node)->str = str;
-                    GetEntryForNode(hamt, node)->data = data;
+                    deletefunc(GetEntryForNode(hamt, node)->value);
+                    GetEntryForNode(hamt, node)->key = key;
+                    GetEntryForNode(hamt, node)->keylen = keylen;
+                    GetEntryForNode(hamt, node)->value = value;
                 } else
-                    deletefunc(data);
+                    deletefunc(value);
 
-                return GetEntryForNode(hamt, node)->data;
+                return GetEntryForNode(hamt, node)->value;
             } else {
-                uint32_t key2 = node->BitMapKey;
+                uint32_t key_hash2 = node->BitMapKey;
                 /* build tree downward until keys differ */
                 for (;;) {
                     uint32_t keypart2;
@@ -313,20 +312,21 @@ HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
                     keypartbits += 5;
                     if (keypartbits > 30) {
                         /* Exceeded 32 bits: rehash */
-                        key = hamt->ReHashKey(str, level);
-                        key2 = hamt->ReHashKey(
-                            GetEntryForNode(hamt, node)->str, level);
+                        key_hash = rehash_key(key, keylen, level);
+                        key_hash2 = rehash_key(GetEntryForNode(hamt, node)->key,
+                                               GetEntryForNode(hamt, node)->keylen,
+                                               level);
                         keypartbits = 0;
                     }
-                    keypart = (key >> keypartbits) & 0x1F;
-                    keypart2 = (key2 >> keypartbits) & 0x1F;
+                    keypart = (key_hash >> keypartbits) & 0x1F;
+                    keypart2 = (key_hash2 >> keypartbits) & 0x1F;
 
                     if (keypart == keypart2) {
                         /* Still equal, build one-node subtrie and continue
                          * downward.
                          */
                         newnodes = malloc(sizeof(HAMTNode));
-                        newnodes[0].BitMapKey = key2;
+                        newnodes[0].BitMapKey = key_hash2;
                         newnodes[0].BaseValue = node->BaseValue;
                         node->BitMapKey = 1<<keypart;
                         SetSubTrie(hamt, node, newnodes);
@@ -336,18 +336,18 @@ HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
                         /* partitioned: allocate two-node subtrie */
                         newnodes = malloc(2*sizeof(HAMTNode));
 
-                        entry = HAMT_add_entry(hamt, str, data);
+                        entry = HAMT_add_entry(hamt, key, keylen, value);
 
                         /* Copy nodes into subtrie based on order */
                         if (keypart2 < keypart) {
-                            newnodes[0].BitMapKey = key2;
+                            newnodes[0].BitMapKey = key_hash2;
                             newnodes[0].BaseValue = node->BaseValue;
-                            newnodes[1].BitMapKey = key;
+                            newnodes[1].BitMapKey = key_hash;
                             SetEntryForNode(hamt, &newnodes[1], entry);
                         } else {
-                            newnodes[0].BitMapKey = key;
+                            newnodes[0].BitMapKey = key_hash;
                             SetEntryForNode(hamt, &newnodes[0], entry);
-                            newnodes[1].BitMapKey = key2;
+                            newnodes[1].BitMapKey = key_hash2;
                             newnodes[1].BaseValue = node->BaseValue;
                         }
 
@@ -355,7 +355,7 @@ HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
                         node->BitMapKey = (1UL<<keypart) | (1UL<<keypart2);
                         SetSubTrie(hamt, node, newnodes);
                         *replace = 1;
-                        return data;
+                        return value;
                     }
                 }
             }
@@ -365,10 +365,10 @@ HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
         keypartbits += 5;
         if (keypartbits > 30) {
             /* Exceeded 32 bits of current key: rehash */
-            key = hamt->ReHashKey(str, level);
+            key_hash = rehash_key(key, keylen, level);
             keypartbits = 0;
         }
-        keypart = (key >> keypartbits) & 0x1F;
+        keypart = (key_hash >> keypartbits) & 0x1F;
         if (!(node->BitMapKey & (1<<keypart))) {
             /* bit is 0 in bitmap -> add node to table */
             uint32_t Size;
@@ -393,14 +393,14 @@ HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
             /* Delete old subtrie */
             free(GetSubTrie(node));
             /* Set up new node */
-            newnodes[Map].BitMapKey = key;
+            newnodes[Map].BitMapKey = key_hash;
 
-            entry = HAMT_add_entry(hamt, str, data);
+            entry = HAMT_add_entry(hamt, key, keylen, value);
             SetEntryForNode(hamt, &newnodes[Map], entry);
             SetSubTrie(hamt, node, newnodes);
 
             *replace = 1;
-            return data;
+            return value;
         }
 
         /* Count bits below */
@@ -413,22 +413,22 @@ HAMT_insert(HAMT *hamt, const char *str, void *data, int *replace,
     }
 }
 
-void *HAMT_set(HAMT *hamt, const char *str,
-               void *data, void (*deletefunc) (void *data))
+void *HAMT_set(HAMT *hamt, const void *key, size_t keylen,
+               void *value, void (*deletefunc) (void *value))
 {
     int replace = 1;
-    return HAMT_insert(hamt, (const char *)str, data, &replace, deletefunc);
+    return HAMT_insert(hamt, key, keylen, value, &replace, deletefunc);
 }
 
-HAMTEntry* HAMT_search(HAMT *hamt, const char *str)
+HAMTEntry* HAMT_search(HAMT *hamt, const void *key, size_t keylen)
 {
     HAMTNode *node;
-    uint32_t key, keypart, Map;
+    uint32_t key_hash, keypart, Map;
     int keypartbits = 0;
     int level = 0;
 
-    key = hamt->HashKey(str);
-    keypart = key & 0x1F;
+    key_hash = hash_key(key, keylen);
+    keypart = key_hash & 0x1F;
     node = &hamt->root[keypart];
 
     if (!node->BaseValue)
@@ -436,9 +436,11 @@ HAMTEntry* HAMT_search(HAMT *hamt, const char *str)
 
     for (;;) {
         if (!(IsSubTrie(node))) {
-            if (node->BitMapKey == key
-                && hamt->CmpKey(GetEntryForNode(hamt, node)->str,
-                                str) == 0)
+            if (node->BitMapKey == key_hash
+                && cmp_key(GetEntryForNode(hamt, node)->key,
+                           GetEntryForNode(hamt, node)->keylen,
+                           key,
+                           keylen) == 0)
                 return GetEntryForNode(hamt, node);
             else
                 return NULL;
@@ -448,10 +450,10 @@ HAMTEntry* HAMT_search(HAMT *hamt, const char *str)
         keypartbits += 5;
         if (keypartbits > 30) {
             /* Exceeded 32 bits of current key: rehash */
-            key = hamt->ReHashKey(str, level);
+            key_hash = rehash_key(key, keylen, level);
             keypartbits = 0;
         }
-        keypart = (key >> keypartbits) & 0x1F;
+        keypart = (key_hash >> keypartbits) & 0x1F;
         if (!(node->BitMapKey & (1<<keypart)))
             return NULL;        /* bit is 0 in bitmap -> no match */
 
@@ -466,15 +468,14 @@ HAMTEntry* HAMT_search(HAMT *hamt, const char *str)
 }
 
 void *
-HAMT_get(HAMT *hamt, const char *str)
+HAMT_get(HAMT *hamt, const void *key, size_t keylen)
 {
-    HAMTEntry *entry = HAMT_search(hamt, str);
+    HAMTEntry *entry = HAMT_search(hamt, key, keylen);
     if (!entry) {
         return NULL;
     }
-    return entry->data;
+    return entry->value;
 }
-
 
 size_t
 HAMT_length(const HAMT *hamt)
