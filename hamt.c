@@ -33,13 +33,25 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
+
+#ifndef HAMT_VERBOSE
+#define HAMT_VERBOSE 1
+#endif
+#ifndef HAMT_USE_XXHASH
+#define HAMT_USE_XXHASH 1
+#endif
+
 #include <ctype.h>
 #include <sys/queue.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef HAMT_VERBOSE
+#if HAMT_USE_XXHASH
+#include "xxhash/xxhash.h"
+#endif
+
+#if HAMT_VERBOSE
 #include <stdio.h>
 #endif
 
@@ -102,11 +114,15 @@ void HAMT_nothing(void *x)
 static uint32_t
 rehash_key(const void *key, size_t keylen, int level)
 {
+#if HAMT_USE_XXHASH
+    return XXH64(key, keylen, level);
+#else
     const uint8_t *x = key;
     uint32_t a=31415, b=27183, vHash;
     for (vHash=0; x - (uint8_t *)key < keylen; x++, a*=b)
         vHash = a*vHash*(uint32_t)level + *x;
     return vHash;
+#endif
 }
 
 static uint32_t
@@ -129,7 +145,7 @@ cmp_key(const void *x, size_t xlen, const void *y, size_t ylen)
 static void
 error_func(const char *file, unsigned int line, const char *message)
 {
-#ifdef HAMT_VERBOSE
+#if HAMT_VERBOSE
     fprintf(stderr, "%s:%u: %s", file, line, message);
 #endif
     exit(1);
