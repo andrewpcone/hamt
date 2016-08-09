@@ -100,19 +100,19 @@ void HAMT_nothing(void *x)
 {}
 
 static uint32_t
-rehash_key(const void *key, size_t keylen, int Level)
+rehash_key(const void *key, size_t keylen, int level)
 {
     const uint8_t *x = key;
     uint32_t a=31415, b=27183, vHash;
     for (vHash=0; x - (uint8_t *)key < keylen; x++, a*=b)
-        vHash = a*vHash + *x;
+        vHash = a*vHash*(uint32_t)level + *x;
     return vHash;
 }
 
 static uint32_t
 hash_key(const void *key, size_t keylen)
 {
-    return rehash_key(key, keylen, 0);
+    return rehash_key(key, keylen, 1);
 }
 
 static int
